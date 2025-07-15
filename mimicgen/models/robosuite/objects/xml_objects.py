@@ -223,3 +223,14 @@ class LongDrawerObject(MujocoXMLObject):
     @property
     def horizontal_radius(self):
         return 0.15
+class PickPlaceObject(MujocoXMLObject):
+    """
+    Custom version of pick and place object.
+    """
+    def __init__(
+            self,
+            name,
+            path_to_xml,
+            joints=None):
+        super().__init__(path_to_xml,
+                         name=name, joints=None, obj_type="all", duplicate_collision_geoms=True)
