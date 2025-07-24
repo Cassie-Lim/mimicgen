@@ -551,7 +551,8 @@ def main(args):
 
             # send output to a temporary directory
             mg_config.experiment.generation.path = "/tmp/tmp_mimicgen"
-
+        if args.obj_xml_path is not None:
+            mg_config.experiment.task.env_meta_update_kwargs["env_kwargs"]["obj_xml_path"] = args.obj_xml_path
     # catch error during generation and print it
     res_str = "finished run successfully!"
     important_stats = None
@@ -649,6 +650,12 @@ if __name__ == "__main__":
         "--seed",
         type=int,
         help="seed, to override the one in the config",
+        default=None,
+    )
+    parser.add_argument(
+        "--obj_xml_path",
+        type=str,
+        help="path to the object XML file, to override the one in the config",
         default=None,
     )
 

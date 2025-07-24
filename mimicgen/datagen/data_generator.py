@@ -259,9 +259,14 @@ class DataGenerator(object):
         generated_src_demo_labels = [] # like @generated_src_demo_inds, but padded to align with size of @generated_actions
 
         for subtask_ind in range(len(self.task_spec)):
+            print("\nDataGenerator: Generating subtask {}/{}...".format(subtask_ind + 1, len(self.task_spec)))
 
             # some things only happen on first subtask
             is_first_subtask = (subtask_ind == 0)
+            is_dummy_subtask = (self.task_spec[subtask_ind]["subtask_term_signal"] is None)
+            if is_dummy_subtask:
+                # skip dummy subtask - nothing to do here
+                continue
 
             # get datagen info in current environment to get required info for selection (e.g. eef pose, object pose)
             cur_datagen_info = env_interface.get_datagen_info()

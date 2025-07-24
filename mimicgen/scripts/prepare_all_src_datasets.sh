@@ -74,3 +74,9 @@ python prepare_src_dataset.py \
     --dataset ../../datasets/source/three_piece_assembly.hdf5 \
     --env_interface MG_ThreePieceAssembly \
     --env_interface_type robosuite
+
+# Lift
+python prepare_src_dataset.py \
+    --dataset tmp/human_demos/lift_D0/1753245714_0584276/demo.hdf5 \
+    --env_interface MG_Lift \
+    --env_interface_type robosuite

@@ -573,7 +573,40 @@ class MG_NutAssembly(RobosuiteInterface):
         # final subtask is inserting round nut onto round peg (motion relative to round peg) - but final subtask signal is not needed
         return signals
 
+class MG_Lift(RobosuiteInterface):
+    """
+    Corresponds to robosuite Lift task and variants.
+    """
+    def get_object_poses(self):
+        """
+        Gets the pose of each object relevant to MimicGen data generation in the current scene.
 
+        Returns:
+            object_poses (dict): dictionary that maps object name (str) to object pose matrix (4x4 np.array)
+        """
+
+        return dict(
+            target=self.get_object_pose(obj_name=self.env.target.root_body, obj_type="body"),
+        )
+
+    def get_subtask_term_signals(self):
+        """
+        Gets a dictionary of binary flags for each subtask in a task. The flag is 1
+        when the subtask has been completed and 0 otherwise. MimicGen only uses this
+        when parsing source demonstrations at the start of data generation, and it only
+        uses the first 0 -> 1 transition in this signal to detect the end of a subtask.
+
+        Returns:
+            subtask_term_signals (dict): dictionary that maps subtask name to termination flag (0 or 1)
+        """
+        signals = dict()
+        signals["grasp_target"] = int(self.env._check_grasp(
+            gripper=self.env.robots[0].gripper,
+            object_geoms=self.env.target)
+        )
+        signals["lift_target"] = int(self.env._check_success())
+        return signals
+    
 class MG_PickPlace(RobosuiteInterface):
     """
     Corresponds to robosuite PickPlace task and variants.
@@ -629,7 +662,59 @@ class MG_PickPlace(RobosuiteInterface):
 
         return signals
 
+class MG_PickPlace_v1(RobosuiteInterface):
+    """
+    Corresponds to robosuite PickPlace task and variants.
+    """
+    def get_object_poses(self):
+        """
+        Gets the pose of each object relevant to MimicGen data generation in the current scene.
 
+        Returns:
+            object_poses (dict): dictionary that maps object name (str) to object pose matrix (4x4 np.array)
+        """
+
+        # four relevant objects - milk, bread, cereal, can
+        object_poses = dict()
+        for obj_name in self.env.object_to_id:
+            obj = self.env.objects[self.env.object_to_id[obj_name]]
+            object_poses[obj_name] = self.get_object_pose(obj_name=obj.root_body, obj_type="body")
+        return object_poses
+
+    def get_subtask_term_signals(self):
+        """
+        Gets a dictionary of binary flags for each subtask in a task. The flag is 1
+        when the subtask has been completed and 0 otherwise. MimicGen only uses this
+        when parsing source demonstrations at the start of data generation, and it only
+        uses the first 0 -> 1 transition in this signal to detect the end of a subtask.
+
+        Returns:
+            subtask_term_signals (dict): dictionary that maps subtask name to termination flag (0 or 1)
+        """
+        signals = dict()
+
+        # checks which objects are in their correct bins and records them in @self.objects_in_bins
+        self.env._check_success()
+
+        object_names_in_order = list(self.env.object_to_id.keys())
+        n_obj = len(object_names_in_order)
+
+        # each subtask is a grasp and then a place
+        for i, obj_name in enumerate(object_names_in_order):
+            obj_id = self.env.object_to_id[obj_name]
+
+            # first subtask for each object is grasping (motion relative to the object)
+            signals["grasp_{}".format(obj_name)] = int(self.env._check_grasp(
+                gripper=self.env.robots[0].gripper,
+                object_geoms=[g for g in self.env.objects[obj_id].contact_geoms])
+            )
+
+            # skip final subtask - unneeded
+            if i < (n_obj - 1):
+                # second subtask for each object is placement into bin (motion relative to bin)
+                signals["place_{}".format(obj_name)] = int(self.env.objects_in_bins[obj_id])
+
+        return signals
 class MG_Kitchen(RobosuiteInterface):
     """
     Corresponds to robosuite Kitchen task and variants.

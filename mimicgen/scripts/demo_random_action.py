@@ -9,6 +9,7 @@ Similar to the demo_random_action.py script from robosuite.
 from robosuite.controllers import load_controller_config
 from robosuite.utils.input_utils import *
 from mimicgen.envs.robosuite.pick_place import PickPlace_D0, PickPlace_D1
+from mimicgen.envs.robosuite.lift import Lift_D0
 
 
 def choose_mimicgen_environment():
@@ -63,10 +64,12 @@ if __name__ == "__main__":
 
     # Choose environment
     options["env_name"] = "PickPlace_D1"
+    options["env_name"] = "Lift_D0"
     # options["env_name"] = choose_mimicgen_environment()
 
     # Choose robot
-    options["robots"] = choose_robots(exclude_bimanual=True)
+    # options["robots"] = choose_robots(exclude_bimanual=True)
+    options["robots"] = "Panda"
 
     # Load the desired controller
     options["controller_configs"] = load_controller_config(default_controller="OSC_POSE")
