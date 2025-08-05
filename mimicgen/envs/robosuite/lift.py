@@ -300,7 +300,7 @@ class Lift_D0(SingleArmEnv):
         self.target = MujocoXMLObject(
             self.obj_xml_path,
             name="target",
-            joints=[dict(type="free", damping="0.0005")],
+            joints=[dict(type="free", damping="0")],
             obj_type="all",
             duplicate_collision_geoms=True,
         )
