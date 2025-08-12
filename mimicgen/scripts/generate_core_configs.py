@@ -237,7 +237,8 @@ def make_generators(base_configs):
             select_src_per_subtask=False,
             # selection_strategy="nearest_neighbor_object",
             # selection_strategy_kwargs=dict(nn_k=3),
-            subtask_term_offset_range=[[5, 6], [5, 6], None],
+            subtask_term_offset_range=[[5, 6], None],
+            # subtask_term_offset_range=[[5, 6], [5, 6], None],
         ),
     ]
 

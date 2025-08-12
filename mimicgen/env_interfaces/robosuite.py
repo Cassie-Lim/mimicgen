@@ -600,10 +600,10 @@ class MG_Lift(RobosuiteInterface):
             subtask_term_signals (dict): dictionary that maps subtask name to termination flag (0 or 1)
         """
         signals = dict()
-        signals["grasp_target"] = int(self.env._check_grasp(
-            gripper=self.env.robots[0].gripper,
-            object_geoms=self.env.target)
-        )
+        # signals["grasp_target"] = int(self.env._check_grasp(
+        #     gripper=self.env.robots[0].gripper,
+        #     object_geoms=self.env.target)
+        # )
         signals["lift_target"] = int(self.env._check_success())
         return signals
     

@@ -692,18 +692,18 @@ class Lift_Config(MG_Config):
         dictionary should have kwargs for the @add_subtask method in the 
         @MG_TaskSpec object.
         """
+        # self.task.task_spec.subtask_1 = dict(
+        #     object_ref="target", 
+        #     subtask_term_signal="grasp_target",
+        #     subtask_term_offset_range=(10, 20),
+        #     selection_strategy="nearest_neighbor_object",
+        #     selection_strategy_kwargs=dict(nn_k=3),
+        #     action_noise=0.05,
+        #     num_interpolation_steps=5,
+        #     num_fixed_steps=0,
+        #     apply_noise_during_interpolation=False,
+        # )
         self.task.task_spec.subtask_1 = dict(
-            object_ref="target", 
-            subtask_term_signal="grasp_target",
-            subtask_term_offset_range=(10, 20),
-            selection_strategy="nearest_neighbor_object",
-            selection_strategy_kwargs=dict(nn_k=3),
-            action_noise=0.05,
-            num_interpolation_steps=5,
-            num_fixed_steps=0,
-            apply_noise_during_interpolation=False,
-        )
-        self.task.task_spec.subtask_2 = dict(
             object_ref=None, 
             subtask_term_signal="lift_target",
             subtask_term_offset_range=None,
@@ -714,7 +714,7 @@ class Lift_Config(MG_Config):
             num_fixed_steps=0,
             apply_noise_during_interpolation=False,
         )
-        self.task.task_spec.subtask_3 = dict(
+        self.task.task_spec.subtask_2 = dict(
             object_ref=None, 
             subtask_term_signal=None,
             subtask_term_offset_range=None,

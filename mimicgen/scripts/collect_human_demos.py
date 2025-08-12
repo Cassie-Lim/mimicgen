@@ -123,6 +123,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
         states = []
         actions = []
         success = False
+        grasping_point = []
 
         for state_file in sorted(glob(state_paths)):
             dic = np.load(state_file, allow_pickle=True)
@@ -132,6 +133,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
             for ai in dic["action_infos"]:
                 actions.append(ai["actions"])
             success = success or dic["successful"]
+            grasping_point.extend(dic["grasping_point"])
 
         if len(states) == 0:
             continue
@@ -157,6 +159,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
             # write datasets for states and actions
             ep_data_grp.create_dataset("states", data=np.array(states))
             ep_data_grp.create_dataset("actions", data=np.array(actions))
+            ep_data_grp.create_dataset("grasping_points", data=np.array(grasping_point))
         else:
             print("Demonstration is unsuccessful and has NOT been saved")
 
