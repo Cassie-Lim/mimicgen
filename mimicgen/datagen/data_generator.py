@@ -191,6 +191,7 @@ class DataGenerator(object):
         video_skip=5,
         camera_names=None,
         pause_subtask=False,
+        target_to_source_transform=None,
     ):
         """
         Attempt to generate a new demonstration.
@@ -280,6 +281,10 @@ class DataGenerator(object):
             # We need source demonstration selection for the first subtask (always), and possibly for 
             # other subtasks if @select_src_per_subtask is set.
             need_source_demo_selection = (is_first_subtask or select_src_per_subtask)
+
+            # Need to transform cur_object_pose to match the object pose in the source demonstration based on graph matching
+            cur_object_pose = cur_object_pose @ target_to_source_transform if (cur_object_pose is not None and target_to_source_transform is not None) else cur_object_pose
+
 
             # Run source demo selection or use selected demo from previous iteration
             if need_source_demo_selection:
