@@ -15,6 +15,7 @@ from robosuite.utils.transform_utils import convert_quat
 from mimicgen.models.robosuite.objects.xml_objects import MujocoXMLObject
 from robosuite.models.base import MujocoModel
 from robosuite.models.grippers import GripperModel
+import mujoco
 
 class Lift_D0(SingleArmEnv):
     """
@@ -447,80 +448,188 @@ class Lift_D0(SingleArmEnv):
         """
         return xml_str
 
-    def get_contact_point(self, gripper, object_geoms):
+    # def get_contact_point(self, gripper, object_geoms):
+    #     """
+    #     Return a list of 4x4 contact poses expressed in the OBJECT frame.
+    #     Each 4x4 has rotation (from contact.frame) and translation (contact point).
+
+    #     Args:
+    #         gripper (GripperModel | list[str] | str)
+    #         object_geoms (MujocoModel | list[str] | str)
+
+    #     Returns:
+    #         list[np.ndarray]: each shape (4,4), object-frame contact pose matrices.
+    #     """
+    #     model = self.sim.model
+    #     data  = self.sim.data
+
+    #     # --- standardize inputs ---
+    #     if isinstance(object_geoms, MujocoModel):
+    #         o_geoms = object_geoms.contact_geoms
+    #         object_key = getattr(object_geoms, "name", None) or tuple(sorted(o_geoms))
+    #     elif isinstance(object_geoms, str):
+    #         o_geoms = [object_geoms]
+    #         object_key = tuple(sorted(o_geoms))
+    #     else:
+    #         o_geoms = object_geoms
+    #         object_key = tuple(sorted(o_geoms))
+
+    #     if isinstance(gripper, GripperModel):
+    #         g_geoms = gripper.contact_geoms
+    #     elif isinstance(gripper, str):
+    #         g_geoms = [gripper]
+    #     else:
+    #         g_geoms = gripper
+
+    #     # Map names -> ids
+    #     g_ids = {model.geom_name2id(n) for n in g_geoms}
+    #     o_ids = {model.geom_name2id(n) for n in o_geoms}
+
+    #     # --- choose object reference body (unique per object) ---
+    #     ref_geom_id = next(iter(o_ids))
+    #     obj_body_id = int(model.geom_bodyid[ref_geom_id])
+
+    #     # Object pose in world
+    #     Rwo = data.xmat[obj_body_id].reshape(3, 3).copy()   # world←object rotation
+    #     pwo = data.xpos[obj_body_id].copy()                 # world position of object origin
+
+    #     # # Cache transforms (optional)
+    #     # if not hasattr(self, "_obj_frame_cache"):
+    #     #     self._obj_frame_cache = {}
+    #     # T_obj_world = np.eye(4); T_obj_world[:3,:3] = Rwo; T_obj_world[:3,3] = pwo
+    #     # T_world_obj = np.eye(4); T_world_obj[:3,:3] = Rwo.T; T_world_obj[:3,3] = -Rwo.T @ pwo
+    #     # self._obj_frame_cache[object_key] = {
+    #     #     "body_id": obj_body_id,
+    #     #     "T_obj_world": T_obj_world,
+    #     #     "T_world_obj": T_world_obj,
+    #     # }
+
+    #     # --- collect contacts and convert to object frame (full 4x4 pose) ---
+    #     poses_obj = []
+    #     for i in range(data.ncon):
+    #         c = data.contact[i]
+    #         if not ((c.geom1 in g_ids and c.geom2 in o_ids) or (c.geom2 in g_ids and c.geom1 in o_ids)):
+    #             continue
+
+    #         # world-space contact point and frame
+    #         p_w = c.pos.copy()                              # (3,)
+    #         R_wc = np.array(c.frame).reshape(3, 3).copy()   # world←contact (cols: [normal, t1, t2])
+
+    #         # express in object frame
+    #         p_o  = Rwo.T @ (p_w - pwo)
+    #         R_oc = Rwo.T @ R_wc
+
+    #         T_oc = np.eye(4)
+    #         T_oc[:3, :3] = R_oc
+    #         T_oc[:3, 3]  = p_o
+    #         poses_obj.append(T_oc)
+
+    #     return poses_obj
+
+    def get_contact_points(self, gripper, object_geoms, k=2):
         """
-        Return a list of 4x4 contact poses expressed in the OBJECT frame.
-        Each 4x4 has rotation (from contact.frame) and translation (contact point).
+        Return up to k strongest contacts (by normal force) between gripper and object.
 
         Args:
             gripper (GripperModel | list[str] | str)
             object_geoms (MujocoModel | list[str] | str)
+            k (int): number of contacts to keep
 
         Returns:
-            list[np.ndarray]: each shape (4,4), object-frame contact pose matrices.
+            contacts: list of dicts (length <= k), each with:
+                {
+                "T_obj_contact": (4,4) contact pose in OBJECT frame,
+                "p_obj": (3,) contact position in OBJECT frame,
+                "R_obj_contact": (3,3) rotation (object<-contact),
+                "fn": float  # normal force (>=0) in contact frame
+                "ft": float  # tangential force magnitude
+                "condim": int
+                "pair": (geom1_name, geom2_name)
+                }
+        Notes:
+            - Call this AFTER the solver runs (e.g., after a simulation step) so forces are valid.
+            - Contact frame columns are [normal, tangent1, tangent2, ...].
         """
         model = self.sim.model
         data  = self.sim.data
 
-        # --- standardize inputs ---
+        # object geoms
         if isinstance(object_geoms, MujocoModel):
             o_geoms = object_geoms.contact_geoms
-            object_key = getattr(object_geoms, "name", None) or tuple(sorted(o_geoms))
         elif isinstance(object_geoms, str):
             o_geoms = [object_geoms]
-            object_key = tuple(sorted(o_geoms))
         else:
-            o_geoms = object_geoms
-            object_key = tuple(sorted(o_geoms))
+            o_geoms = list(object_geoms)
 
+        # gripper geoms
         if isinstance(gripper, GripperModel):
             g_geoms = gripper.contact_geoms
         elif isinstance(gripper, str):
             g_geoms = [gripper]
         else:
-            g_geoms = gripper
+            g_geoms = list(gripper)
 
-        # Map names -> ids
         g_ids = {model.geom_name2id(n) for n in g_geoms}
         o_ids = {model.geom_name2id(n) for n in o_geoms}
 
-        # --- choose object reference body (unique per object) ---
-        ref_geom_id = next(iter(o_ids))
-        obj_body_id = int(model.geom_bodyid[ref_geom_id])
+        # choose reference body for object frame
+        ref_gid    = next(iter(o_ids))
+        obj_bodyid = int(model.geom_bodyid[ref_gid])
 
-        # Object pose in world
-        Rwo = data.xmat[obj_body_id].reshape(3, 3).copy()   # world←object rotation
-        pwo = data.xpos[obj_body_id].copy()                 # world position of object origin
+        Rwo = data.xmat[obj_bodyid].reshape(3, 3).copy()  # world<-object
+        pwo = data.xpos[obj_bodyid].copy()                # world pos of object origin
 
-        # # Cache transforms (optional)
-        # if not hasattr(self, "_obj_frame_cache"):
-        #     self._obj_frame_cache = {}
-        # T_obj_world = np.eye(4); T_obj_world[:3,:3] = Rwo; T_obj_world[:3,3] = pwo
-        # T_world_obj = np.eye(4); T_world_obj[:3,:3] = Rwo.T; T_world_obj[:3,3] = -Rwo.T @ pwo
-        # self._obj_frame_cache[object_key] = {
-        #     "body_id": obj_body_id,
-        #     "T_obj_world": T_obj_world,
-        #     "T_world_obj": T_world_obj,
-        # }
+        results = []
+        # scratch for mj_contactForce
+        f_contact = np.zeros(6, dtype=float)
 
-        # --- collect contacts and convert to object frame (full 4x4 pose) ---
-        poses_obj = []
         for i in range(data.ncon):
             c = data.contact[i]
-            if not ((c.geom1 in g_ids and c.geom2 in o_ids) or (c.geom2 in g_ids and c.geom1 in o_ids)):
+            pair_ok = ((c.geom1 in g_ids and c.geom2 in o_ids) or
+                    (c.geom2 in g_ids and c.geom1 in o_ids))
+            if not pair_ok:
                 continue
 
-            # world-space contact point and frame
-            p_w = c.pos.copy()                              # (3,)
-            R_wc = np.array(c.frame).reshape(3, 3).copy()   # world←contact (cols: [normal, t1, t2])
+            # Extract force in contact frame
+            f_contact[:] = 0.0
+            mujoco.mj_contactForce(model, data, i, f_contact)
 
-            # express in object frame
+            # normal force (>=0 if pushing)
+            fn = max(float(f_contact[0]), 0.0)
+            if fn <= 0.0:
+                # ignore separating / near-zero contacts
+                continue
+
+            # tangential magnitude (uses condim to know how many tangential components apply)
+            condim = int(c.dim) if hasattr(c, "dim") else int(model.geom_condim[c.geom1])
+            tangential = f_contact[1:min(condim, 3)]  # at most 2 tangential terms are used in typical setups
+            ft = float(np.linalg.norm(tangential))
+
+            # world-space contact pose
+            p_w  = c.pos.copy()
+            R_wc = np.array(c.frame).reshape(3, 3).copy()  # world<-contact
+
+            # convert to object frame
             p_o  = Rwo.T @ (p_w - pwo)
             R_oc = Rwo.T @ R_wc
 
             T_oc = np.eye(4)
             T_oc[:3, :3] = R_oc
             T_oc[:3, 3]  = p_o
-            poses_obj.append(T_oc)
 
-        return poses_obj
+            results.append({
+                "T_obj_contact": T_oc,
+                "p_obj": p_o,
+                "R_obj_contact": R_oc,
+                "fn": fn,
+                "ft": ft,
+                "condim": condim,
+                "pair": (model.geom_id2name(c.geom1), model.geom_id2name(c.geom2)),
+            })
+
+        # sort by descending normal force and keep top-k
+        results.sort(key=lambda d: d["fn"], reverse=True)
+        if k is not None and k > 0:
+            results = results[:k]
+
+        return [r["T_obj_contact"] for r in results]
