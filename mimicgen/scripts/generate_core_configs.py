@@ -60,6 +60,7 @@ BASE_CONFIGS = [
     os.path.join(BASE_BASE_CONFIG_PATH, "mug_cleanup.json"),
     os.path.join(BASE_BASE_CONFIG_PATH, "kitchen.json"),
     os.path.join(BASE_BASE_CONFIG_PATH, "lift.json"),
+    os.path.join(BASE_BASE_CONFIG_PATH, "open.json"),
 ]
 
 
@@ -233,6 +234,20 @@ def make_generators(base_configs):
             generation_path="{}/lift_D0".format(OUTPUT_FOLDER),
             # task_interface="MG_Lift",
             tasks=["Lift_D0"],
+            task_names=["D0"],
+            select_src_per_subtask=False,
+            # selection_strategy="nearest_neighbor_object",
+            # selection_strategy_kwargs=dict(nn_k=3),
+            subtask_term_offset_range=[[5, 6], None],
+            # subtask_term_offset_range=[[5, 6], [5, 6], None],
+        ),
+        # open
+        dict(
+            dataset_path=os.path.join(SRC_DATA_DIR, "open_door.hdf5"),
+            dataset_name="door_D0",
+            generation_path="{}/door_D0".format(OUTPUT_FOLDER),
+            # task_interface="MG_Lift",
+            tasks=["Door"],
             task_names=["D0"],
             select_src_per_subtask=False,
             # selection_strategy="nearest_neighbor_object",

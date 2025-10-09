@@ -163,3 +163,71 @@ class MyUniformRandomSampler(UniformRandomSampler):
                 raise RandomizationError("Cannot place all objects ):")
 
         return placed_objects
+
+class MultiAxisUniformRandomSampler(UniformRandomSampler):
+    def _sample_quat(self):
+        """
+        Samples the orientation for a given object allowing multiple rotation axes.
+
+        Supports:
+          - self.rotation_axis: "x"/"y"/"z" or iterable of axes like ["z","x"]
+          - self.rotation: a list of None, scalar, (min,max), or iterable matching rotation_axis length,
+                          or a single (min,max)/scalar reused for all axes.
+
+        Returns:
+            np.array: sampled quaternion in (w, x, y, z) form
+        """
+        # normalize axes to a list
+        if isinstance(self.rotation_axis, str):
+            axes = [self.rotation_axis.lower()]
+        elif isinstance(self.rotation_axis, collections.abc.Iterable):
+            axes = [a.lower() for a in self.rotation_axis]
+        else:
+            raise ValueError(f"Invalid rotation_axis: {self.rotation_axis}")
+
+        # normalize rotation spec to a list of same length as axes
+        def _is_range_like(v):
+            return isinstance(v, collections.abc.Iterable) and len(v) == 2
+
+        rot_specs = self.rotation
+
+        # quaternion helpers (w, x, y, z)
+        def quat_mul(q1, q2):
+            # Hamilton product: q = q1 * q2
+            w1, x1, y1, z1 = q1
+            w2, x2, y2, z2 = q2
+            w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+            x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+            y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+            z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+            return np.array([w, x, y, z], dtype=float)
+
+        def quat_from_axis_angle(axis, angle):
+            ca = np.cos(angle / 2.0)
+            sa = np.sin(angle / 2.0)
+            if axis == "x":
+                return np.array([ca, sa, 0.0, 0.0], dtype=float)
+            elif axis == "y":
+                return np.array([ca, 0.0, sa, 0.0], dtype=float)
+            elif axis == "z":
+                return np.array([ca, 0.0, 0.0, sa], dtype=float)
+            else:
+                raise ValueError(f"Invalid axis '{axis}' (must be 'x','y','z')")
+
+        # Compose per-axis quaternions in order: first axis applied first.
+        q_total = np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+        for ax, rot_spec in zip(axes, rot_specs):
+            if rot_spec is None:
+                rot_angle = np.random.uniform(high=2 * np.pi, low=0)
+            elif isinstance(rot_spec, collections.abc.Iterable):
+                rot_angle = np.random.uniform(high=max(rot_spec), low=min(rot_spec))
+            else:
+                rot_angle = rot_spec
+
+            q_axis = quat_from_axis_angle(ax, rot_angle)
+            # Compose: q_total = q_total * q_axis  (apply q_axis after q_total)
+            q_total = quat_mul(q_total, q_axis)
+
+        # normalize to avoid numerical drift
+        q_total = q_total / np.linalg.norm(q_total)
+        return q_total
