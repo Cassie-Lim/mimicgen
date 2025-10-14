@@ -18,6 +18,42 @@ from mimicgen.datagen.datagen_info import DatagenInfo
 from mimicgen.datagen.selection_strategy import make_selection_strategy
 from mimicgen.datagen.waypoint import WaypointSequence, WaypointTrajectory
 
+def vectorized_postgrasp_lift(src_eef_poses, last_close_idx, gripper_pose,
+                              z_src=np.array([0,0,1.0]),
+                              z_tgt=np.array([0,0,1.0])):
+    """
+    src_eef_poses: (N,4,4) source world poses
+    last_close_idx: int, index of the last -1->1 transition
+    gripper_pose: (4,4) target grasp pose (world, target)
+    z_src, z_tgt: up vectors in source / target worlds
+    """
+    g = int(last_close_idx)
+    Rs_src = src_eef_poses[g:, :3, :3]        # (M,3,3)
+    ps_src = src_eef_poses[g:, :3,  3]        # (M,3)
+
+    R_src_g = src_eef_poses[g, :3, :3]        # (3,3)
+    p_src_g = src_eef_poses[g, :3,  3]        # (3,)
+
+    R_tgt_g = gripper_pose[:3, :3]            # (3,3)
+    p_tgt_g = gripper_pose[:3,  3]            # (3,)
+
+    # 1) Relative orientation to grasp, then reapply on target grasp
+    # dR_i = R_src_i @ R_src_g.T   -> (M,3,3)
+    dR = Rs_src @ R_src_g.T
+    R_tgt = R_tgt_g[None, :, :] @ dR          # (M,3,3)
+
+    # 2) Vertical displacement only (lift)
+    dp_world = ps_src - p_src_g[None, :]      # (M,3)
+    h = (dp_world * z_src[None, :]).sum(axis=1)   # (M,)
+    p_tgt = p_tgt_g[None, :] + h[:, None] * z_tgt[None, :]  # (M,3)
+
+    # 3) Pack SE(3)
+    M = Rs_src.shape[0]
+    T_out = np.tile(np.eye(4), (M, 1, 1))
+    T_out[:, :3, :3] = R_tgt
+    T_out[:, :3,  3] = p_tgt
+    return T_out
+
 
 class DataGenerator(object):
     """
@@ -283,8 +319,8 @@ class DataGenerator(object):
             need_source_demo_selection = (is_first_subtask or select_src_per_subtask)
 
             # Need to transform cur_object_pose to match the object pose in the source demonstration based on graph matching
-            cur_object_pose = cur_object_pose @ target_to_source_transform if (cur_object_pose is not None and target_to_source_transform is not None) else cur_object_pose
-
+            # cur_object_pose = cur_object_pose @ target_to_source_transform if (cur_object_pose is not None and target_to_source_transform is not None) else cur_object_pose
+            gripper_pose = cur_object_pose @ target_to_source_transform
 
             # Run source demo selection or use selected demo from previous iteration
             if need_source_demo_selection:
@@ -352,20 +388,47 @@ class DataGenerator(object):
                 )
             traj_to_execute.add_waypoint_sequence(init_sequence)
 
-            # Construct trajectory for the transformed segment.
-            transformed_seq = WaypointSequence.from_poses(
-                poses=transformed_eef_poses, 
-                gripper_actions=src_subtask_gripper_actions,
+            R = np.array(gripper_pose[:3, :3], dtype=float)
+            pos = np.array(gripper_pose[:3, 3], dtype=float)
+            env.env.set_gripper_vis(pos, R)
+
+            # quat = np.empty(4, dtype=float)
+            # mujoco.mju_mat2Quat(quat, R.flatten()) 
+            # env.env.sim.data.set_joint_qpos(env.env.visual_target_gripper.joints[-1], np.concatenate([np.array(pos), np.array(quat)]))
+            # grasp_action = np.concatenate([np.zeros(3), [1] * env.env.robots[0].gripper.dof])
+            transitions = np.where((src_subtask_gripper_actions[1:] == 1) &
+                       (src_subtask_gripper_actions[:-1] == -1))[0]
+            last_close_idx = transitions[-1] + 1 
+            # truncated_transformed_eef_poses = gripper_pose @ src_eef_poses[last_close_idx].T @ src_eef_poses[last_close_idx:]
+            truncated_transformed_eef_poses = vectorized_postgrasp_lift(src_eef_poses, last_close_idx, gripper_pose)
+            target_seq = WaypointSequence.from_poses(
+                    poses=gripper_pose[None], 
+                    # gripper_actions=np.array([[1.0]]),
+                    gripper_actions=src_subtask_gripper_actions[0:1],
+                    action_noise=self.task_spec[subtask_ind]["action_noise"],
+                )
+            target_traj = WaypointTrajectory()
+            target_traj.add_waypoint_sequence(target_seq)
+            # # Construct trajectory for the transformed segment.
+            # transformed_seq = WaypointSequence.from_poses(
+            #     poses=transformed_eef_poses, 
+            #     gripper_actions=src_subtask_gripper_actions,
+            #     action_noise=self.task_spec[subtask_ind]["action_noise"],
+            # )
+            truncated_transformed_seq = WaypointSequence.from_poses(
+                poses=truncated_transformed_eef_poses, 
+                gripper_actions=src_subtask_gripper_actions[last_close_idx:],
                 action_noise=self.task_spec[subtask_ind]["action_noise"],
             )
-            transformed_traj = WaypointTrajectory()
-            transformed_traj.add_waypoint_sequence(transformed_seq)
+            target_traj.add_waypoint_sequence(truncated_transformed_seq)
+            # transformed_traj = WaypointTrajectory()
+            # transformed_traj.add_waypoint_sequence(transformed_seq)
 
             # Merge this trajectory into our trajectory using linear interpolation.
             # Interpolation will happen from the initial pose (@init_sequence) to the first element of @transformed_seq.
             traj_to_execute.merge(
-                transformed_traj,
-                num_steps_interp=self.task_spec[subtask_ind]["num_interpolation_steps"],
+                target_traj,
+                num_steps_interp=100,
                 num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
                 action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
             )

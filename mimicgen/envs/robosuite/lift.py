@@ -13,6 +13,7 @@ from robosuite.utils.placement_samplers import UniformRandomSampler
 from mimicgen.utils.place_samplers import MyUniformRandomSampler
 from robosuite.utils.transform_utils import convert_quat
 from mimicgen.models.robosuite.objects.xml_objects import MujocoXMLObject
+from mimicgen.utils.articulate_utils import snapshot_initial_kinematics, get_contacts_canonical
 from robosuite.models.base import MujocoModel
 from robosuite.models.grippers import GripperModel
 import mujoco
@@ -215,6 +216,8 @@ class Lift_D0(SingleArmEnv):
             renderer_config=renderer_config,
         )
 
+        # self.T_w_o0, self.T_w_b0 = snapshot_initial_kinematics(self.sim, self.target_body_id)
+
     def reward(self, action=None):
         """
         Reward function for the task.
@@ -320,19 +323,27 @@ class Lift_D0(SingleArmEnv):
                 mujoco_objects=self.target,
                 x_range=[-0.03, 0.03],
                 y_range=[-0.03, 0.03],
-                rotation=np.pi/2,
+                rotation=0,
+                # rotation=np.pi/2,
                 rotation_axis="x",
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
                 z_offset=0.01,
             )
+        self.visual_target_gripper = MujocoXMLObject(
+            '/home/cassie/Workspace/mani/d3fields/gripper.xml',
+            name="target_gripper_visual",
+            joints=None,
+            obj_type="visual",
+            duplicate_collision_geoms=True,
+        )
 
         # task includes arena, robot, and objects of interest
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=self.target,
+            mujoco_objects=[self.visual_target_gripper, self.target],
         )
 
     def _setup_references(self):
@@ -405,7 +416,22 @@ class Lift_D0(SingleArmEnv):
 
             # Loop through all objects and reset their positions
             for obj_pos, obj_quat, obj in object_placements.values():
-                self.sim.data.set_joint_qpos(obj.joints[0], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+                self.sim.data.set_joint_qpos(obj.joints[-1], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
+        self.set_gripper_vis()
+
+    def set_gripper_vis(self, grip_pos=None, grip_R=None):
+        if grip_pos is None:
+            grip_pos = self.sim.data.get_site_xpos(self.robots[0].gripper.important_sites["grip_site"])
+            grip_R = self.sim.data.get_site_xmat(self.robots[0].gripper.important_sites["grip_site"])
+        grip_R = grip_R @ np.array([
+                    [0, 1, 0],
+                    [0, 0, 1],
+                    [1, 0, 0],
+                    ])
+        grip_quat = np.empty(4, dtype=float)
+        mujoco.mju_mat2Quat(grip_quat, grip_R.flatten()) 
+        self.sim.model.body_pos[self.sim.model.body_name2id('target_gripper_visual_main')] = grip_pos
+        self.sim.model.body_quat[self.sim.model.body_name2id('target_gripper_visual_main')] = grip_quat
 
     def visualize(self, vis_settings):
         """
@@ -525,30 +551,30 @@ class Lift_D0(SingleArmEnv):
     #         poses_obj.append(T_oc)
 
     #     return poses_obj
+    # def get_contact_points(self, gripper, object_geoms, k=2):
+    #     contacts = get_contacts_canonical(
+    #         sim=self.sim,
+    #         gripper=gripper,   # or list of gripper geoms
+    #         object_geoms=object_geoms,   # or list of object geoms
+    #         object_root_body_id=self.target_body_id,
+    #         T_w_o0=self.T_w_o0,
+    #         T_w_b0=self.T_w_b0,
+    #         k=2
+    #     )
+    #     return [c["T_obj_contact"] for c in contacts]
 
     def get_contact_points(self, gripper, object_geoms, k=2):
         """
         Return up to k strongest contacts (by normal force) between gripper and object.
 
-        Args:
-            gripper (GripperModel | list[str] | str)
-            object_geoms (MujocoModel | list[str] | str)
-            k (int): number of contacts to keep
-
-        Returns:
-            contacts: list of dicts (length <= k), each with:
-                {
-                "T_obj_contact": (4,4) contact pose in OBJECT frame,
-                "p_obj": (3,) contact position in OBJECT frame,
-                "R_obj_contact": (3,3) rotation (object<-contact),
-                "fn": float  # normal force (>=0) in contact frame
-                "ft": float  # tangential force magnitude
-                "condim": int
-                "pair": (geom1_name, geom2_name)
-                }
-        Notes:
-            - Call this AFTER the solver runs (e.g., after a simulation step) so forces are valid.
-            - Contact frame columns are [normal, tangent1, tangent2, ...].
+        Returns: list[dict] with keys:
+        - "T_obj_contact": (4,4) contact pose in OBJECT frame
+        - "p_obj": (3,) contact position in OBJECT frame
+        - "R_obj_contact": (3,3) rotation (object<-contact)
+        - "T_obj_gripper": (4,4) gripper pose in OBJECT frame
+        - "R_obj_gripper": (3,3) rotation (object<-gripper)
+        - "p_obj_gripper": (3,) gripper origin in OBJECT frame
+        - "fn", "ft", "condim", "pair"
         """
         model = self.sim.model
         data  = self.sim.data
@@ -562,22 +588,19 @@ class Lift_D0(SingleArmEnv):
             o_geoms = list(object_geoms)
 
         # gripper geoms
-        if isinstance(gripper, GripperModel):
-            g_geoms = gripper.contact_geoms
-        elif isinstance(gripper, str):
-            g_geoms = [gripper]
-        else:
-            g_geoms = list(gripper)
-
+        g_geoms = gripper.contact_geoms
         g_ids = {model.geom_name2id(n) for n in g_geoms}
         o_ids = {model.geom_name2id(n) for n in o_geoms}
 
-        # choose reference body for object frame
-        ref_gid    = next(iter(o_ids))
-        obj_bodyid = int(model.geom_bodyid[ref_gid])
+        Rwo = data.xmat[self.target_body_id].reshape(3, 3).copy()  # world<-object
+        pwo = data.xpos[self.target_body_id].copy()                # world pos of object origin
 
-        Rwo = data.xmat[obj_bodyid].reshape(3, 3).copy()  # world<-object
-        pwo = data.xpos[obj_bodyid].copy()                # world pos of object origin
+        # Helper: build 4x4 from R, p
+        def _make_T(R, p):
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3]  = p
+            return T
 
         results = []
         # scratch for mj_contactForce
@@ -590,37 +613,42 @@ class Lift_D0(SingleArmEnv):
             if not pair_ok:
                 continue
 
-            # Extract force in contact frame
+            # contact force (contact-frame)
             f_contact[:] = 0.0
-            mujoco.mj_contactForce(model, data, i, f_contact)
-
-            # normal force (>=0 if pushing)
+            mujoco.mj_contactForce(model._model, data._data, i, f_contact)
             fn = max(float(f_contact[0]), 0.0)
             if fn <= 0.0:
-                # ignore separating / near-zero contacts
                 continue
 
-            # tangential magnitude (uses condim to know how many tangential components apply)
             condim = int(c.dim) if hasattr(c, "dim") else int(model.geom_condim[c.geom1])
-            tangential = f_contact[1:min(condim, 3)]  # at most 2 tangential terms are used in typical setups
+            tangential = f_contact[1:min(condim, 3)]
             ft = float(np.linalg.norm(tangential))
 
             # world-space contact pose
             p_w  = c.pos.copy()
             R_wc = np.array(c.frame).reshape(3, 3).copy()  # world<-contact
 
-            # convert to object frame
+            # object-frame contact pose
             p_o  = Rwo.T @ (p_w - pwo)
             R_oc = Rwo.T @ R_wc
+            T_oc = _make_T(R_oc, p_o)
 
-            T_oc = np.eye(4)
-            T_oc[:3, :3] = R_oc
-            T_oc[:3, 3]  = p_o
+            # ---- gripper pose (object frame) ----
+            Rwg = self.sim.data.get_site_xmat(gripper.important_sites["grip_site"])
+            pwg = self.sim.data.get_site_xpos(gripper.important_sites["grip_site"])
+
+            # object<-gripper
+            R_og = Rwo.T @ Rwg
+            p_og = Rwo.T @ (pwg - pwo)
+            T_og = _make_T(R_og, p_og)
 
             results.append({
                 "T_obj_contact": T_oc,
                 "p_obj": p_o,
                 "R_obj_contact": R_oc,
+                "T_obj_gripper": T_og,
+                "R_obj_gripper": R_og,
+                "p_obj_gripper": p_og,
                 "fn": fn,
                 "ft": ft,
                 "condim": condim,
@@ -632,4 +660,4 @@ class Lift_D0(SingleArmEnv):
         if k is not None and k > 0:
             results = results[:k]
 
-        return [r["T_obj_contact"] for r in results]
+        return [r["T_obj_contact"] for r in results], [r["T_obj_gripper"] for r in results]
