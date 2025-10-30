@@ -11,7 +11,10 @@ from copy import deepcopy
 
 import mimicgen
 import mimicgen.utils.pose_utils as PoseUtils
-
+import mjpl
+import mink
+import copy
+import mujoco
 
 class Waypoint(object):
     """
@@ -309,6 +312,104 @@ class WaypointTrajectory(object):
 
         # concatenate the trajectories
         self.waypoint_sequences += other.waypoint_sequences
+    def mink_interpolate(self, new_traj, model_orig):
+        model = copy.deepcopy(model_orig)
+        other_first = new_traj.pop_first()
+        target_for_interpolation = other_first[0]
+        target_pose = mink.SE3.from_matrix(target_for_interpolation.pose)
+        init_pose = mink.SE3.from_matrix(self.last_waypoint.pose)
+        gripper_action = target_for_interpolation.gripper_action
+
+        body_names = [
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)
+                for i in range(model.nbody)
+            ]
+            
+        # Categorize bodies by name
+        tables   = [b for b in body_names if "table" in b or "world" in b]
+        grippers = [b for b in body_names if "gripper" in b or "finger" in b]
+        objects  = [b for b in body_names if "object" in b or "target" in b]
+        
+        allowed_pairs = []
+        
+        # 1️⃣ Object ↔ Table
+        for t in tables:
+            for o in objects:
+                allowed_pairs.append((t, o))
+        
+        # 2️⃣ Object ↔ Gripper/Fingers
+        for g in grippers:
+            for o in objects:
+                allowed_pairs.append((g, o))
+        
+        # 3️⃣ Gripper ↔ Gripper (fingers themselves)
+        for i, g1 in enumerate(grippers):
+            for g2 in grippers[i + 1:]:
+                allowed_pairs.append((g1, g2))
+
+        constraints = [
+            # mjpl.JointLimitConstraint(model),
+            mjpl.CollisionConstraint(model, allowed_collision_bodies=allowed_pairs),
+        ]
+        robot_joints = [j for j in mjpl.all_joints(model) if 'robot' in j]
+        mink_solver = mjpl.MinkIKSolver(
+            model=model,
+            joints=robot_joints,
+            constraints=constraints,
+            pos_tolerance=1e-3,
+            ori_tolerance=1e-3,
+            seed=12345,
+            max_attempts=10,
+            iterations=500
+        )
+        rrt_planner = mjpl.RRT(
+            model,
+            robot_joints,
+            constraints,
+            max_planning_time=5.0,
+            epsilon=0.1,
+            seed=42,
+        )
+        data = mujoco.MjData(model)
+        q_init = mink_solver.solve_ik(
+                pose=init_pose,
+                site='gripper0_grip_site',
+                q_init_guess=None,
+            )[0]
+        q_target = mink_solver.solve_ik(
+                pose=target_pose,
+                site='gripper0_grip_site',
+                q_init_guess=q_init,
+            )[0]
+        waypoints = rrt_planner.plan_to_config(q_init, q_target)
+        shortcut_waypoints = mjpl.smooth_path(
+            waypoints, constraints, eps=rrt_planner.epsilon, seed=0
+        )
+        dof = len(waypoints[0])
+        traj_generator = mjpl.ToppraTrajectoryGenerator(
+            dt=model.opt.timestep,
+            max_velocity=np.ones(dof) * 32.0 * np.pi,
+            max_acceleration=np.ones(dof) * 16.0 * np.pi,
+        )
+
+        print("Generating trajectory...")
+        trajectory = traj_generator.generate_trajectory(shortcut_waypoints)
+        gripper_poses = []
+        for solution in trajectory.positions:
+            data = mujoco.MjData(model)
+            data.qpos = solution.copy()
+            mujoco.mj_kinematics(model, data)
+            actual_gripper_pose_se3 = mjpl.site_pose(data, 'gripper0_grip_site')
+            actual_gripper_pose = actual_gripper_pose_se3.as_matrix()
+            if not np.isnan(actual_gripper_pose).any():
+                gripper_poses.append(actual_gripper_pose)
+        gripper_actions = np.array([gripper_action for _ in range(len(gripper_poses))])
+        sequence = WaypointSequence.from_poses(
+            poses=np.array(gripper_poses),
+            gripper_actions=gripper_actions,
+            action_noise=0.,
+        )
+        self.add_waypoint_sequence(sequence)
 
     def execute(
         self, 

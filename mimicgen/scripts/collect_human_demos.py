@@ -137,7 +137,7 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
             success = success or dic["successful"]
             grasping_point.extend(dic["grasping_point"])
             grasping_gripper_pose.extend(dic["grasping_gripper_pose"])
-            grasped.append(dic["sucessful"])
+            grasped.append(dic["grasped"])
 
         if len(states) == 0:
             continue

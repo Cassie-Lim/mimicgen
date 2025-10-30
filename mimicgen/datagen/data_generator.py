@@ -401,6 +401,43 @@ class DataGenerator(object):
             last_close_idx = transitions[-1] + 1 
             # truncated_transformed_eef_poses = gripper_pose @ src_eef_poses[last_close_idx].T @ src_eef_poses[last_close_idx:]
             truncated_transformed_eef_poses = vectorized_postgrasp_lift(src_eef_poses, last_close_idx, gripper_pose)
+            
+            offset_dist = 0.02  # 2 cm away from object, tune as needed
+            approach_dir = gripper_pose[:3, 2]  # local z-axis in world frame
+            gripper_pose_offset = gripper_pose
+            gripper_pose_offset[:3, 3] -= offset_dist * approach_dir
+            intermediate_seq = WaypointSequence.from_poses(
+                    poses=gripper_pose_offset[None], 
+                    # gripper_actions=np.array([[1.0]]),
+                    gripper_actions=src_subtask_gripper_actions[0:1],
+                    action_noise=self.task_spec[subtask_ind]["action_noise"],
+                )
+            intermediate_traj = WaypointTrajectory()
+            intermediate_traj.add_waypoint_sequence(intermediate_seq)
+            try:
+                traj_to_execute.mink_interpolate(
+                    new_traj=intermediate_traj,
+                    model_orig=env.env.model.get_model(),
+                )
+            except Exception as e:
+                print("⚠️ Error during mink_interpolate:")
+                print("Exception type:", type(e).__name__)
+                print("Message:", e)
+                # print("Traceback:")
+                # traceback.print_exc()
+                traj_to_execute.merge(
+                    intermediate_traj,
+                    num_steps_interp=100,
+                    num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
+                    action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
+                )
+            # traj_to_execute.merge(
+            #     intermediate_traj,
+            #     num_steps_interp=100,
+            #     num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
+            #     action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
+            # )
+
             target_seq = WaypointSequence.from_poses(
                     poses=gripper_pose[None], 
                     # gripper_actions=np.array([[1.0]]),
