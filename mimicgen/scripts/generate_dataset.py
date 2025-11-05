@@ -447,6 +447,7 @@ def generate_dataset(
         num_problematic=num_problematic,
         start_time=start_time,
         ep_length_stats=ep_length_stats,
+        failure_mode_meta=failure_mode_meta
     )
     print("\nStats Summary")
     print(json.dumps(stats, indent=4))

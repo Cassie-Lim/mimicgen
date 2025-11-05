@@ -15,6 +15,7 @@ import mjpl
 import mink
 import copy
 import mujoco
+from scipy.spatial.transform import Rotation as R
 
 class Waypoint(object):
     """
@@ -314,7 +315,7 @@ class WaypointTrajectory(object):
         self.waypoint_sequences += other.waypoint_sequences
     def mink_interpolate(self, new_traj, model_orig):
         model = copy.deepcopy(model_orig)
-        other_first = new_traj.pop_first()
+        other_first, _ = new_traj.waypoint_sequences[0].split(1)    # do not pop yet, does not gauranteed
         target_for_interpolation = other_first[0]
         target_pose = mink.SE3.from_matrix(target_for_interpolation.pose)
         init_pose = mink.SE3.from_matrix(self.last_waypoint.pose)
@@ -338,29 +339,31 @@ class WaypointTrajectory(object):
                 allowed_pairs.append((t, o))
         
         # 2️⃣ Object ↔ Gripper/Fingers
-        for g in grippers:
-            for o in objects:
-                allowed_pairs.append((g, o))
+        # for g in grippers:
+        #     for o in objects:
+        #         allowed_pairs.append((g, o))
         
         # 3️⃣ Gripper ↔ Gripper (fingers themselves)
         for i, g1 in enumerate(grippers):
             for g2 in grippers[i + 1:]:
                 allowed_pairs.append((g1, g2))
 
+        
+        robot_joints = [j for j in mjpl.all_joints(model) if 'robot' in j]
+        joint_ids = [model.joint(j).id for j in robot_joints]
+        lower_limits = model.jnt_range[joint_ids, 0]
+        upper_limits = model.jnt_range[joint_ids, 1]
         constraints = [
-            # mjpl.JointLimitConstraint(model),
+            mjpl.JointLimitConstraint(lower_limits, upper_limits),
             mjpl.CollisionConstraint(model, allowed_collision_bodies=allowed_pairs),
         ]
-        robot_joints = [j for j in mjpl.all_joints(model) if 'robot' in j]
         mink_solver = mjpl.MinkIKSolver(
             model=model,
             joints=robot_joints,
             constraints=constraints,
-            pos_tolerance=1e-3,
-            ori_tolerance=1e-3,
-            seed=12345,
             max_attempts=10,
-            iterations=500
+            iterations=500,
+            qp_solver='proxqp'
         )
         rrt_planner = mjpl.RRT(
             model,
@@ -376,14 +379,14 @@ class WaypointTrajectory(object):
                 site='gripper0_grip_site',
                 q_init_guess=None,
             )[0]
-        q_target = mink_solver.solve_ik(
-                pose=target_pose,
-                site='gripper0_grip_site',
-                q_init_guess=q_init,
-            )[0]
-        waypoints = rrt_planner.plan_to_config(q_init, q_target)
+        rrt_solution = rrt_planner.plan_to_pose(q_init, target_pose, site='gripper0_grip_site', solver=mink_solver)
+        if rrt_solution['success']:
+            waypoints = rrt_solution['solution']
+        else:
+            return False, rrt_solution['failure_mode']
+        q_idx = mjpl.qpos_idx(model, robot_joints)
         shortcut_waypoints = mjpl.smooth_path(
-            waypoints, constraints, eps=rrt_planner.epsilon, seed=0
+            waypoints, constraints, eps=rrt_planner.epsilon, seed=0, q_idx=q_idx
         )
         dof = len(waypoints[0])
         traj_generator = mjpl.ToppraTrajectoryGenerator(
@@ -410,6 +413,8 @@ class WaypointTrajectory(object):
             action_noise=0.,
         )
         self.add_waypoint_sequence(sequence)
+        new_traj.pop_first()
+        return True, ''
 
     def execute(
         self, 
@@ -419,6 +424,7 @@ class WaypointTrajectory(object):
         video_writer=None, 
         video_skip=5, 
         camera_names=None,
+        target_gripper_pose=None
     ):
         """
         Main function to execute the trajectory. Will use env_interface.target_pose_to_action to
@@ -450,7 +456,8 @@ class WaypointTrajectory(object):
         observations = []
         datagen_infos = []
         success = { k: False for k in env.is_success() } # success metrics
-
+        gripper_closed = False
+        reached_target_grasp = False
         # iterate over waypoint sequences
         for seq in self.waypoint_sequences:
 
@@ -480,6 +487,17 @@ class WaypointTrajectory(object):
 
                 # convert target pose to arm action
                 action_pose = env_interface.target_pose_to_action(target_pose=waypoint.pose)
+                if target_gripper_pose is not None and not gripper_closed and waypoint.gripper_action == 1: # first time gripper closed
+                    pos_tol = 0.01      # meters
+                    ori_tol = np.deg2rad(5)
+                    pos1, ori1 = PoseUtils.unmake_pose(target_gripper_pose)
+                    pos2, ori2 = PoseUtils.unmake_pose(waypoint.pose)
+                    pos_err = np.linalg.norm(pos1 - pos2)
+                    R_rel = ori1.T @ ori2     # relative rotation matrix (R_rel = R1⁻¹ * R2)
+                    angle_err = np.arccos(np.clip((np.trace(R_rel) - 1) / 2.0, -1.0, 1.0))
+                    reached_target_grasp = (pos_err < pos_tol) and (angle_err < ori_tol) 
+
+                    gripper_closed = True
 
                 # maybe add noise to action
                 if waypoint.noise is not None:
@@ -512,5 +530,6 @@ class WaypointTrajectory(object):
             datagen_infos=datagen_infos,
             actions=np.array(actions),
             success=bool(success["task"]),
+            reached_target_grasp=reached_target_grasp
         )
         return results

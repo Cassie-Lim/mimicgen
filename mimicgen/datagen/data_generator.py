@@ -295,6 +295,11 @@ class DataGenerator(object):
         generated_src_demo_inds = [] # store selected src demo ind for each subtask in each trajectory
         generated_src_demo_labels = [] # like @generated_src_demo_inds, but padded to align with size of @generated_actions
 
+        failure_mode_meta = {
+            'path_planning_success': [],
+            'mink_failure_mode': [],
+            "reached_target_grasp": [],
+        }
         for subtask_ind in range(len(self.task_spec)):
             print("\nDataGenerator: Generating subtask {}/{}...".format(subtask_ind + 1, len(self.task_spec)))
 
@@ -400,25 +405,29 @@ class DataGenerator(object):
                        (src_subtask_gripper_actions[:-1] == -1))[0]
             last_close_idx = transitions[-1] + 1 
             # truncated_transformed_eef_poses = gripper_pose @ src_eef_poses[last_close_idx].T @ src_eef_poses[last_close_idx:]
-            truncated_transformed_eef_poses = vectorized_postgrasp_lift(src_eef_poses, last_close_idx, gripper_pose)
             
-            offset_dist = 0.02  # 2 cm away from object, tune as needed
+            offset_dist = 0.05  # 5 cm away from object, tune as needed
             approach_dir = gripper_pose[:3, 2]  # local z-axis in world frame
-            gripper_pose_offset = gripper_pose
+            gripper_pose_offset = gripper_pose.copy()
             gripper_pose_offset[:3, 3] -= offset_dist * approach_dir
+            gripper_pose_fwd = gripper_pose.copy()
+            gripper_pose_fwd[:3, 3] += 0.02 * approach_dir
+            truncated_transformed_eef_poses = vectorized_postgrasp_lift(src_eef_poses, last_close_idx, gripper_pose_fwd)
+
             intermediate_seq = WaypointSequence.from_poses(
                     poses=gripper_pose_offset[None], 
-                    # gripper_actions=np.array([[1.0]]),
-                    gripper_actions=src_subtask_gripper_actions[0:1],
+                    gripper_actions=np.array([[-1.0]]),
                     action_noise=self.task_spec[subtask_ind]["action_noise"],
                 )
             intermediate_traj = WaypointTrajectory()
             intermediate_traj.add_waypoint_sequence(intermediate_seq)
             try:
-                traj_to_execute.mink_interpolate(
+                path_planning_success, mink_failure_mode = traj_to_execute.mink_interpolate(
                     new_traj=intermediate_traj,
                     model_orig=env.env.model.get_model(),
                 )
+                failure_mode_meta['path_planning_success'].append(int(path_planning_success))
+                failure_mode_meta['mink_failure_mode'].append(mink_failure_mode)
             except Exception as e:
                 print("⚠️ Error during mink_interpolate:")
                 print("Exception type:", type(e).__name__)
@@ -439,9 +448,10 @@ class DataGenerator(object):
             # )
 
             target_seq = WaypointSequence.from_poses(
-                    poses=gripper_pose[None], 
-                    # gripper_actions=np.array([[1.0]]),
-                    gripper_actions=src_subtask_gripper_actions[0:1],
+                    poses=np.array([gripper_pose_fwd]*20), 
+                    gripper_actions=np.array([[-1.0]]*20),
+                    # gripper_actions=np.array([[-1.0]]*19 + [[1.0]]),
+                    # gripper_actions=src_subtask_gripper_actions[0:1],
                     action_noise=self.task_spec[subtask_ind]["action_noise"],
                 )
             target_traj = WaypointTrajectory()
@@ -483,7 +493,9 @@ class DataGenerator(object):
                 video_writer=video_writer,
                 video_skip=video_skip,
                 camera_names=camera_names,
+                target_gripper_pose=gripper_pose_fwd
             )
+            failure_mode_meta['reached_target_grasp'].append(int(exec_results['reached_target_grasp']))
 
             # check that trajectory is non-empty
             if len(exec_results["states"]) > 0:
@@ -515,5 +527,6 @@ class DataGenerator(object):
             success=generated_success,
             src_demo_inds=generated_src_demo_inds,
             src_demo_labels=generated_src_demo_labels,
+            failure_mode_meta=failure_mode_meta,
         )
         return results
