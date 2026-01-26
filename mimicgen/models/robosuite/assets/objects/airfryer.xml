@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="cabinet">
+
+  <!-- Added: brighter airfryer-like materials -->
+  <asset>
+    <material name="MatAirfryerBody"   rgba="0.92 0.93 0.96 1" specular="0.25" shininess="0.6"/>
+    <material name="MatAirfryerDark"   rgba="0.12 0.12 0.14 1" specular="0.15" shininess="0.4"/>
+    <material name="MatAirfryerAccent" rgba="0.98 0.62 0.12 1" specular="0.20" shininess="0.5"/>
+    <material name="MatAirfryerMetal"  rgba="0.70 0.72 0.75 1" specular="0.60" shininess="0.9"/>
+  </asset>
+
+  <worldbody>
+    <body>
+      <body name="object" pos="0.3 0 0">
+        <body name="base" pos="0 0 0" quat="1 0 0 0">
+
+          <!-- swapped MatRedWood -> MatAirfryerBody -->
+          <geom name="drawer_left_wall"  material="MatAirfryerBody" pos="-0.11 -0.0315 0.065" size="0.008 0.1435 0.064" group="0" type="box" mass="0.05"/>
+          <geom name="drawer_right_wall" material="MatAirfryerBody" pos="0.11  -0.0315 0.065" size="0.008 0.1435 0.064" group="0" type="box" mass="0.05"/>
+
+          <geom name="drawer_back_wall" material="MatAirfryerBody" pos="0 0.092 0.062" size="0.102 0.008 0.064" group="0" type="box" mass="0.05"/>
+
+          <geom name="drawer_bottom_surface" material="MatAirfryerBody" pos="0 -0.0395 0.004" size="0.102 0.1335 0.014" group="0" type="box" mass="0.05"/>
+          <geom name="drawer_top_surface"    material="MatAirfryerBody" pos="0 -0.0215 0.121" size="0.102 0.1335 0.008" group="0" type="box" mass="0.05"/>
+
+          <geom name="drawer_cavity_1" material="MatAirfryerBody" pos="-0.102 -0.163 0.065" size="0.012 0.012 0.064" group="0" type="box" mass="0.05"/>
+          <geom name="drawer_cavity_2" material="MatAirfryerBody" pos="0.102  -0.163 0.065" size="0.012 0.012 0.064" group="0" type="box" mass="0.05"/>
+
+            <!-- ========================================================= -->
+            <!-- Added: Airfryer-like housing that rides on the drawer_link -->
+            <!-- ========================================================= -->
+
+            <!-- main housing -->
+            <geom name="airfryer_body" material="MatAirfryerBody"
+                  pos="0 -0.01 0.170" size="0.118 0.12 0.050" type="box" group="0" mass="0.40"/>
+
+            <!-- top lid / cap -->
+            <geom name="airfryer_top" material="MatAirfryerBody"
+                  pos="0 -0.01 0.185" size="0.118 0.12 0.010" type="box" group="0" mass="0.10"/>
+
+            <!-- front control panel strip -->
+            <geom name="airfryer_panel" material="MatAirfryerDark"
+                  pos="0 -0.13 0.165" size="0.078 0.006 0.018" type="box" group="0" mass="0.02"/>
+
+            <!-- front window (basket window) -->
+            <geom name="airfryer_window" material="MatAirfryerDark"
+                  pos="0 -0.13 0.120" size="0.070 0.004 0.030" type="box" group="0" mass="0.01"/>
+
+            <!-- knob -->
+            <geom name="airfryer_knob" material="MatAirfryerMetal"
+                  pos="0.060 -0.140 0.165" size="0.012 0.006" type="cylinder" group="0" mass="0.01"/>
+
+            <!-- two buttons -->
+            <geom name="airfryer_button_1" material="MatAirfryerAccent"
+                  pos="-0.030 -0.140 0.165" size="0.008 0.004 0.004" type="box" group="0" mass="0.002"/>
+            <geom name="airfryer_button_2" material="MatAirfryerAccent"
+                  pos="-0.010 -0.140 0.165" size="0.008 0.004 0.004" type="box" group="0" mass="0.002"/>
+
+            <!-- simple side vents (right side) -->
+            <!-- <geom name="airfryer_vent_r1" material="MatAirfryerDark"
+                  pos="0.121 -0.030 0.135" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/> -->
+            <geom name="airfryer_vent_r2" material="MatAirfryerDark"
+                  pos="0.121 -0.030 0.150" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/>
+            <geom name="airfryer_vent_r3" material="MatAirfryerDark"
+                  pos="0.121 -0.030 0.165" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/>
+
+            <!-- matching side vents (left side) -->
+            <geom name="airfryer_vent_l1" material="MatAirfryerDark"
+                  pos="-0.121 -0.030 0.135" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/>
+            <geom name="airfryer_vent_l2" material="MatAirfryerDark"
+                  pos="-0.121 -0.030 0.150" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/>
+            <geom name="airfryer_vent_l3" material="MatAirfryerDark"
+                  pos="-0.121 -0.030 0.165" size="0.002 0.030 0.004" type="box" group="0" mass="0.001"/>
+
+
+          <body name="drawer_link" pos="0 -0.01 0.076">
+            <inertial pos="0 0 0.35" quat="0.5 0.5 0.5 0.5" mass="7.85398" diaginertia="0.923301 0.764585 0.168533" />
+
+            <joint type="slide" range="-1.0 0" axis="0 1 0"
+                   name="goal_slidey" pos="0 0 0" damping="100.0"/>
+
+            <!-- swapped MatRedWood -> MatAirfryerBody -->
+            <geom name="drawer_tray_1" material="MatAirfryerBody" pos="0 -0.155 0.007" size="0.088 0.010 0.040" group="0" type="box" mass="0.04"/>
+            <geom name="drawer_tray_2" material="MatAirfryerBody" pos="0 0.065 0.008"  size="0.095 0.008 0.028" group="0" type="box" mass="0.04"/>
+            <geom name="drawer_tray_3" material="MatAirfryerBody" pos="-0.072 -0.042 -0.015" size="0.008 0.114 0.008" group="0" type="box" mass="0.04"/>
+            <geom name="drawer_tray_4" material="MatAirfryerBody" pos="0.072  -0.042 -0.015" size="0.008 0.114 0.008" group="0" type="box" mass="0.04"/>
+            <geom name="drawer_bottom" material="MatAirfryerBody" pos="0 -0.04 -0.03" size="0.08 0.12 0.008" group="0" type="box" mass="0.04"/>
+
+            <!-- swapped MatLightWood -> MatAirfryerAccent -->
+            <geom name="drawer_handle_1" material="MatAirfryerAccent" quat="0.7071055 0.7071081 0 0" pos="-0.05 -0.19 0.035" size="0.009 0.03" group="0" type="capsule" mass="0.06"/>
+            <geom name="drawer_handle_2" material="MatAirfryerAccent" quat="0.7071055 0 0.7071081 0" pos="0 -0.22 0.035"     size="0.009 0.05" group="0" type="capsule" mass="0.06"/>
+            <geom name="drawer_handle_3" material="MatAirfryerAccent" quat="0.7071055 0.7071081 0 0" pos="0.05 -0.19 0.035"  size="0.009 0.03" group="0" type="capsule" mass="0.06"/>
+
+
+          </body>
+        </body>
+
+        <site name="bottom_site" pos="0 0 -0.3" rgba="0 0 0 0" size="0.005"/>
+        <site name="top_site" pos="0 0 0.3" rgba="0 0 0 0" size="0.005"/>
+        <site name="horizontal_radius_site" pos="0.3 0 0" rgba="0 0 0 0" size="0.1"/>
+      </body>
+    </body>
+  </worldbody>
+
+</mujoco>
