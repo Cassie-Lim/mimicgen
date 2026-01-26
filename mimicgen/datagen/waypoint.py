@@ -16,7 +16,7 @@ import mink
 import copy
 import mujoco
 from scipy.spatial.transform import Rotation as R
-
+from utils.pcd_utils import mujoco_get_scene_pcd
 class Waypoint(object):
     """
     Represents a single desired 6-DoF waypoint, along with corresponding gripper actuation for this point.
@@ -484,6 +484,8 @@ class WaypointTrajectory(object):
                 # current state and obs
                 state = env.get_state()["states"]
                 obs = env.get_observation()
+                # scene_pcd = mujoco_get_scene_pcd(env.env.sim.model._model, env.env.sim.data._data)
+                # obs['scene_pcd'] = scene_pcd
 
                 # convert target pose to arm action
                 action_pose = env_interface.target_pose_to_action(target_pose=waypoint.pose)

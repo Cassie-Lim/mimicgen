@@ -17,7 +17,9 @@ from mimicgen.utils.articulate_utils import snapshot_initial_kinematics, get_con
 from robosuite.models.base import MujocoModel
 from robosuite.models.grippers import GripperModel
 import mujoco
-
+import trimesh
+from utils.pcd_utils import uniform_sample_pcd_from_mesh
+import open3d as o3d
 class Lift_D0(SingleArmEnv):
     """
     This class corresponds to the lifting task for a single robot arm.
@@ -171,6 +173,7 @@ class Lift_D0(SingleArmEnv):
         renderer="mujoco",
         renderer_config=None,
         obj_xml_path=None,
+        vis_target_gripper=True,
     ):
         # settings for table top
         self.table_full_size = table_full_size
@@ -188,6 +191,7 @@ class Lift_D0(SingleArmEnv):
         self.placement_initializer = placement_initializer
 
         self.obj_xml_path = obj_xml_path
+        self.vis_target_gripper = vis_target_gripper
 
         super().__init__(
             robots=robots,
@@ -318,32 +322,37 @@ class Lift_D0(SingleArmEnv):
             self.placement_initializer.reset()
             self.placement_initializer.add_objects(self.target)
         else:
-            self.placement_initializer = MyUniformRandomSampler(
+            self.placement_initializer = UniformRandomSampler(
                 name="ObjectSampler",
                 mujoco_objects=self.target,
-                x_range=[-0.03, 0.03],
-                y_range=[-0.03, 0.03],
-                rotation=0,
-                # rotation=np.pi/2,
-                rotation_axis="x",
+                x_range=[-0.15, 0.15],
+                # x_range=[-0.13, -0.07],
+                y_range=[-0.15, 0.15],
+                # y_range=[-0.0001, 0.0001],
+                # rotation=0,
+                rotation=None,
+                rotation_axis="z",
                 ensure_object_boundary_in_range=False,
                 ensure_valid_placement=True,
                 reference_pos=self.table_offset,
                 z_offset=0.01,
             )
-        self.visual_target_gripper = MujocoXMLObject(
-            '/home/cassie/Workspace/mani/d3fields/gripper.xml',
-            name="target_gripper_visual",
-            joints=None,
-            obj_type="visual",
-            duplicate_collision_geoms=True,
-        )
+        mujoco_objects=[self.target]
+        if self.vis_target_gripper:
+            self.visual_target_gripper = MujocoXMLObject(
+                '/home/cassie/Workspace/mani/d3fields/gripper.xml',
+                name="target_gripper_visual",
+                joints=None,
+                obj_type="visual",
+                duplicate_collision_geoms=True,
+            )
+            mujoco_objects=[self.visual_target_gripper, self.target]
 
         # task includes arena, robot, and objects of interest
         self.model = ManipulationTask(
             mujoco_arena=mujoco_arena,
             mujoco_robots=[robot.robot_model for robot in self.robots],
-            mujoco_objects=[self.visual_target_gripper, self.target],
+            mujoco_objects=mujoco_objects,
         )
 
     def _setup_references(self):
@@ -417,7 +426,8 @@ class Lift_D0(SingleArmEnv):
             # Loop through all objects and reset their positions
             for obj_pos, obj_quat, obj in object_placements.values():
                 self.sim.data.set_joint_qpos(obj.joints[-1], np.concatenate([np.array(obj_pos), np.array(obj_quat)]))
-        self.set_gripper_vis()
+        if self.vis_target_gripper:
+            self.set_gripper_vis()
 
     def set_gripper_vis(self, grip_pos=None, grip_R=None):
         if grip_pos is None:
@@ -460,7 +470,7 @@ class Lift_D0(SingleArmEnv):
         table_height = self.model.mujoco_arena.table_offset[2]
 
         # target is higher than the table top above a margin
-        return target_height > table_height + 0.15
+        return (target_height > table_height + 0.13)
 
     def edit_model_xml(self, xml_str):
         """
@@ -661,3 +671,70 @@ class Lift_D0(SingleArmEnv):
             results = results[:k]
 
         return [r["T_obj_contact"] for r in results], [r["T_obj_gripper"] for r in results]
+    def cache_geom_pcd(self, density=2e3):
+        model = self.sim.model._model
+        data  = self.sim.data._data
+        self.geom_pcd_cache = {}
+        for geom_id in range(model.ngeom):
+            gtype = model.geom_type[geom_id]
+            # Only sample mesh geoms
+            if gtype == mujoco.mjtGeom.mjGEOM_MESH:
+                mesh_id = model.geom_dataid[geom_id]
+                # ------------------------------
+                # (1) Extract mesh vertices/faces
+                # ------------------------------
+                v_adr = model.mesh_vertadr[mesh_id]
+                v_num = model.mesh_vertnum[mesh_id]
+                verts = model.mesh_vert[v_adr : v_adr + v_num]
+                f_adr = model.mesh_faceadr[mesh_id]
+                f_num = model.mesh_facenum[mesh_id]
+                faces = model.mesh_face[f_adr : f_adr + f_num]
+                # trimesh requires faces as (n,3) int
+                faces = faces.reshape(-1, 3)
+                # Build trimesh in local geom frame
+                mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+            elif gtype == mujoco.mjtGeom.mjGEOM_BOX:
+                half = model.geom_size[geom_id]    # (hx, hy, hz)
+                mesh = trimesh.creation.box(extents=2*half, transform=None)
+            else:
+                continue
+            # -------------------------------
+            # (2) Uniform sampling in mesh frame
+            # -------------------------------
+            samples, face_idx = uniform_sample_pcd_from_mesh(mesh, density=density)
+
+            # # -------------------------------
+            # # (3) Transform samples to world frame
+            # # -------------------------------
+            # pos = data.geom_xpos[geom_id]
+            # mat = data.geom_xmat[geom_id].reshape(3, 3)
+
+            # # local → world transform:  x_world = R * x_local + pos
+            # samples_w = samples @ mat.T + pos
+
+            self.geom_pcd_cache[geom_id] = samples
+
+
+    def get_scene_pcd(self, n_samples=10000):
+        all_points = []
+        for geom_id, pcd in self.geom_pcd_cache.items():
+            # Transform samples to world frame
+            pos = self.sim.data.geom_xpos[geom_id]
+            mat = self.sim.data.geom_xmat[geom_id].reshape(3, 3)
+
+            # local → world transform:  x_world = R * x_local + pos
+            samples_w = pcd @ mat.T + pos
+            all_points.append(samples_w)
+        scene_pcd = np.concatenate(all_points, axis=0)
+        scene_box_lower_bound = np.array([-1.0, -2.0,  0.5])
+        scene_box_upper_bound = np.array([ 2.0,  2.0,  5.0])
+        scene_pcd = scene_pcd[
+            (scene_pcd[:,0] >= scene_box_lower_bound[0]) & (scene_pcd[:,0] <= scene_box_upper_bound[0]) &
+            (scene_pcd[:,1] >= scene_box_lower_bound[1]) & (scene_pcd[:,1] <= scene_box_upper_bound[1]) &
+            (scene_pcd[:,2] >= scene_box_lower_bound[2]) & (scene_pcd[:,2] <= scene_box_upper_bound[2])
+        ]
+
+        pc_o3d = o3d.geometry.PointCloud()
+        pc_o3d.points = o3d.utility.Vector3dVector(scene_pcd)
+        pc_o3d = pc_o3d.farthest_point_down_sample(int(n_samples))
+        return np.asarray(pc_o3d.points)
