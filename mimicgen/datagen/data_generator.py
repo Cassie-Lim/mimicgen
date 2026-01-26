@@ -228,6 +228,7 @@ class DataGenerator(object):
         camera_names=None,
         pause_subtask=False,
         target_to_source_transform=None,
+        use_mink=False,
     ):
         """
         Attempt to generate a new demonstration.
@@ -395,7 +396,8 @@ class DataGenerator(object):
 
             R = np.array(gripper_pose[:3, :3], dtype=float)
             pos = np.array(gripper_pose[:3, 3], dtype=float)
-            env.env.set_gripper_vis(pos, R)
+            # if env.env.vis_target_gripper:
+            #     env.env.set_gripper_vis(pos, R)
 
             # quat = np.empty(4, dtype=float)
             # mujoco.mju_mat2Quat(quat, R.flatten()) 
@@ -421,31 +423,33 @@ class DataGenerator(object):
                 )
             intermediate_traj = WaypointTrajectory()
             intermediate_traj.add_waypoint_sequence(intermediate_seq)
-            try:
-                path_planning_success, mink_failure_mode = traj_to_execute.mink_interpolate(
-                    new_traj=intermediate_traj,
-                    model_orig=env.env.model.get_model(),
-                )
-                failure_mode_meta['path_planning_success'].append(int(path_planning_success))
-                failure_mode_meta['mink_failure_mode'].append(mink_failure_mode)
-            except Exception as e:
-                print("⚠️ Error during mink_interpolate:")
-                print("Exception type:", type(e).__name__)
-                print("Message:", e)
-                # print("Traceback:")
-                # traceback.print_exc()
+            if use_mink:
+                try:
+                    path_planning_success, mink_failure_mode = traj_to_execute.mink_interpolate(
+                        new_traj=intermediate_traj,
+                        model_orig=env.env.model.get_model(),
+                    )
+                    failure_mode_meta['path_planning_success'].append(int(path_planning_success))
+                    failure_mode_meta['mink_failure_mode'].append(mink_failure_mode)
+                except Exception as e:
+                    print("⚠️ Error during mink_interpolate:")
+                    print("Exception type:", type(e).__name__)
+                    print("Message:", e)
+                    # print("Traceback:")
+                    # traceback.print_exc()
+                    traj_to_execute.merge(
+                        intermediate_traj,
+                        num_steps_interp=100,
+                        num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
+                        action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
+                    )
+            else:
                 traj_to_execute.merge(
                     intermediate_traj,
                     num_steps_interp=100,
                     num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
                     action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
                 )
-            # traj_to_execute.merge(
-            #     intermediate_traj,
-            #     num_steps_interp=100,
-            #     num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
-            #     action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
-            # )
 
             target_seq = WaypointSequence.from_poses(
                     poses=np.array([gripper_pose_fwd]*20), 
@@ -528,5 +532,233 @@ class DataGenerator(object):
             src_demo_inds=generated_src_demo_inds,
             src_demo_labels=generated_src_demo_labels,
             failure_mode_meta=failure_mode_meta,
+        )
+        return results
+    def generate_mimicgen_vanilla(
+        self,
+        env,
+        env_interface,
+        select_src_per_subtask=False,
+        transform_first_robot_pose=False,
+        interpolate_from_last_target_pose=True,
+        render=False,
+        video_writer=None,
+        video_skip=5,
+        camera_names=None,
+        pause_subtask=False,
+    ):
+        """
+        Attempt to generate a new demonstration.
+
+        Args:
+            env (robomimic EnvBase instance): environment to use for data collection
+            
+            env_interface (MG_EnvInterface instance): environment interface for some data generation operations
+
+            select_src_per_subtask (bool): if True, select a different source demonstration for each subtask 
+                during data generation, else keep the same one for the entire episode
+
+            transform_first_robot_pose (bool): if True, each subtask segment will consist of the first
+                robot pose and the target poses instead of just the target poses. Can sometimes help
+                improve data generation quality as the interpolation segment will interpolate to where 
+                the robot started in the source segment instead of the first target pose. Note that the
+                first subtask segment of each episode will always include the first robot pose, regardless
+                of this argument.
+
+            interpolate_from_last_target_pose (bool): if True, each interpolation segment will start from
+                the last target pose in the previous subtask segment, instead of the current robot pose. Can
+                sometimes improve data generation quality.
+
+            render (bool): if True, render on-screen
+
+            video_writer (imageio writer): video writer
+
+            video_skip (int): determines rate at which environment frames are written to video
+
+            camera_names (list): determines which camera(s) are used for rendering. Pass more than
+                one to output a video with multiple camera views concatenated horizontally.
+
+            pause_subtask (bool): if True, pause after every subtask during generation, for
+                debugging.
+
+        Returns:
+            results (dict): dictionary with the following items:
+                initial_state (dict): initial simulator state for the executed trajectory
+                states (list): simulator state at each timestep
+                observations (list): observation dictionary at each timestep
+                datagen_infos (list): datagen_info at each timestep
+                actions (np.array): action executed at each timestep
+                success (bool): whether the trajectory successfully solved the task or not
+                src_demo_inds (list): list of selected source demonstration indices for each subtask
+                src_demo_labels (np.array): same as @src_demo_inds, but repeated to have a label for each timestep of the trajectory
+        """
+
+        # sample new task instance
+        env.reset()
+        new_initial_state = env.get_state()
+
+        # sample new subtask boundaries
+        all_subtask_inds = self.randomize_subtask_boundaries() # shape [N, S, 2], last dim is start and end action lengths
+
+        # some state variables used during generation
+        selected_src_demo_ind = None
+        prev_executed_traj = None
+
+        # save generated data in these variables
+        generated_states = []
+        generated_obs = []
+        generated_datagen_infos = []
+        generated_actions = []
+        generated_success = False
+        generated_src_demo_inds = [] # store selected src demo ind for each subtask in each trajectory
+        generated_src_demo_labels = [] # like @generated_src_demo_inds, but padded to align with size of @generated_actions
+
+        for subtask_ind in range(len(self.task_spec)):
+
+            # some things only happen on first subtask
+            is_first_subtask = (subtask_ind == 0)
+
+            # get datagen info in current environment to get required info for selection (e.g. eef pose, object pose)
+            cur_datagen_info = env_interface.get_datagen_info()
+
+            # name of object for this subtask
+            subtask_object_name = self.task_spec[subtask_ind]["object_ref"]
+
+            # corresponding current object pose
+            cur_object_pose = cur_datagen_info.object_poses[subtask_object_name] if (subtask_object_name is not None) else None
+
+            # We need source demonstration selection for the first subtask (always), and possibly for 
+            # other subtasks if @select_src_per_subtask is set.
+            need_source_demo_selection = (is_first_subtask or select_src_per_subtask)
+
+            # Run source demo selection or use selected demo from previous iteration
+            if need_source_demo_selection:
+                selected_src_demo_ind = self.select_source_demo(
+                    eef_pose=cur_datagen_info.eef_pose,
+                    object_pose=cur_object_pose,
+                    subtask_ind=subtask_ind,
+                    src_subtask_inds=all_subtask_inds[:, subtask_ind],
+                    subtask_object_name=subtask_object_name,
+                    selection_strategy_name=self.task_spec[subtask_ind]["selection_strategy"],
+                    selection_strategy_kwargs=self.task_spec[subtask_ind]["selection_strategy_kwargs"],
+                )
+            assert (selected_src_demo_ind is not None)
+
+            # selected subtask segment time indices
+            selected_src_subtask_inds = all_subtask_inds[selected_src_demo_ind, subtask_ind]
+
+            # get subtask segment, consisting of the sequence of robot eef poses, target poses, gripper actions
+            src_ep_datagen_info = self.src_dataset_infos[selected_src_demo_ind]
+            src_subtask_eef_poses = src_ep_datagen_info.eef_pose[selected_src_subtask_inds[0] : selected_src_subtask_inds[1]]
+            src_subtask_target_poses = src_ep_datagen_info.target_pose[selected_src_subtask_inds[0] : selected_src_subtask_inds[1]]
+            src_subtask_gripper_actions = src_ep_datagen_info.gripper_action[selected_src_subtask_inds[0] : selected_src_subtask_inds[1]]
+            
+            # get reference object pose from source demo
+            src_subtask_object_pose = src_ep_datagen_info.object_poses[subtask_object_name][selected_src_subtask_inds[0]] if (subtask_object_name is not None) else None
+
+            if is_first_subtask or transform_first_robot_pose:
+                # Source segment consists of first robot eef pose and the target poses. This ensures that
+                # we will interpolate to the first robot eef pose in this source segment, instead of the
+                # first robot target pose.
+                src_eef_poses = np.concatenate([src_subtask_eef_poses[0:1], src_subtask_target_poses], axis=0)
+            else:
+                # Source segment consists of just the target poses.
+                src_eef_poses = np.array(src_subtask_target_poses)
+
+            # account for extra timestep added to @src_eef_poses
+            src_subtask_gripper_actions = np.concatenate([src_subtask_gripper_actions[0:1], src_subtask_gripper_actions], axis=0)
+
+            # Transform source demonstration segment using relevant object pose.
+            if subtask_object_name is not None:
+                transformed_eef_poses = PoseUtils.transform_source_data_segment_using_object_pose(
+                    obj_pose=cur_object_pose,
+                    src_eef_poses=src_eef_poses,
+                    src_obj_pose=src_subtask_object_pose,
+                )
+            else:
+                # skip transformation if no reference object is provided
+                transformed_eef_poses = src_eef_poses
+            
+            # We will construct a WaypointTrajectory instance to keep track of robot control targets 
+            # that will be executed and then execute it.
+            traj_to_execute = WaypointTrajectory()
+
+            if interpolate_from_last_target_pose and (not is_first_subtask):
+                # Interpolation segment will start from last target pose (which may not have been achieved).
+                assert prev_executed_traj is not None
+                last_waypoint = prev_executed_traj.last_waypoint
+                init_sequence = WaypointSequence(sequence=[last_waypoint])
+            else:
+                # Interpolation segment will start from current robot eef pose.
+                init_sequence = WaypointSequence.from_poses(
+                    poses=cur_datagen_info.eef_pose[None], 
+                    gripper_actions=src_subtask_gripper_actions[0:1],
+                    action_noise=self.task_spec[subtask_ind]["action_noise"],
+                )
+            traj_to_execute.add_waypoint_sequence(init_sequence)
+
+            # Construct trajectory for the transformed segment.
+            transformed_seq = WaypointSequence.from_poses(
+                poses=transformed_eef_poses, 
+                gripper_actions=src_subtask_gripper_actions,
+                action_noise=self.task_spec[subtask_ind]["action_noise"],
+            )
+            transformed_traj = WaypointTrajectory()
+            transformed_traj.add_waypoint_sequence(transformed_seq)
+
+            # Merge this trajectory into our trajectory using linear interpolation.
+            # Interpolation will happen from the initial pose (@init_sequence) to the first element of @transformed_seq.
+            traj_to_execute.merge(
+                transformed_traj,
+                num_steps_interp=self.task_spec[subtask_ind]["num_interpolation_steps"],
+                num_steps_fixed=self.task_spec[subtask_ind]["num_fixed_steps"],
+                action_noise=(float(self.task_spec[subtask_ind]["apply_noise_during_interpolation"]) * self.task_spec[subtask_ind]["action_noise"]),
+            )
+
+            # We initialized @traj_to_execute with a pose to allow @merge to handle linear interpolation
+            # for us. However, we can safely discard that first waypoint now, and just start by executing
+            # the rest of the trajectory (interpolation segment and transformed subtask segment).
+            traj_to_execute.pop_first()
+
+            # Execute the trajectory and collect data.
+            exec_results = traj_to_execute.execute(
+                env=env,
+                env_interface=env_interface,
+                render=render,
+                video_writer=video_writer,
+                video_skip=video_skip,
+                camera_names=camera_names,
+            )
+
+            # check that trajectory is non-empty
+            if len(exec_results["states"]) > 0:
+                generated_states += exec_results["states"]
+                generated_obs += exec_results["observations"]
+                generated_datagen_infos += exec_results["datagen_infos"]
+                generated_actions.append(exec_results["actions"])
+                generated_success = generated_success or exec_results["success"]
+                generated_src_demo_inds.append(selected_src_demo_ind)
+                generated_src_demo_labels.append(selected_src_demo_ind * np.ones((exec_results["actions"].shape[0], 1), dtype=int))
+
+            # remember last trajectory
+            prev_executed_traj = traj_to_execute
+
+            if pause_subtask:
+                input("Pausing after subtask {} execution. Press any key to continue...".format(subtask_ind))
+
+        # merge numpy arrays
+        if len(generated_actions) > 0:
+            generated_actions = np.concatenate(generated_actions, axis=0)
+            generated_src_demo_labels = np.concatenate(generated_src_demo_labels, axis=0)
+
+        results = dict(
+            initial_state=new_initial_state,
+            states=generated_states,
+            observations=generated_obs,
+            datagen_infos=generated_datagen_infos,
+            actions=generated_actions,
+            success=generated_success,
+            src_demo_inds=generated_src_demo_inds,
+            src_demo_labels=generated_src_demo_labels,
         )
         return results
