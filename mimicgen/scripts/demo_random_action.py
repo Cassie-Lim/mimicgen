@@ -10,6 +10,8 @@ from robosuite.controllers import load_controller_config
 from robosuite.utils.input_utils import *
 from mimicgen.envs.robosuite.pick_place import PickPlace_D0, PickPlace_D1
 from mimicgen.envs.robosuite.lift import Lift_D0
+import mujoco
+import numpy as np
 
 
 def choose_mimicgen_environment():
@@ -64,7 +66,7 @@ if __name__ == "__main__":
 
     # Choose environment
     options["env_name"] = "PickPlace_D1"
-    options["env_name"] = "Lift_D0"
+    options["env_name"] = "CoffeePreparation_D0"
     # options["env_name"] = choose_mimicgen_environment()
 
     # Choose robot
@@ -74,9 +76,9 @@ if __name__ == "__main__":
     # Load the desired controller
     options["controller_configs"] = load_controller_config(default_controller="OSC_POSE")
 
-    options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/103135/textured_objs/tmp.xml'
-    options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/101326_copy/textured_objs/tmp.xml'
-    options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/3398/model_physical.xml'
+    # options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/103135/textured_objs/tmp.xml'
+    # options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/101326_copy/textured_objs/tmp.xml'
+    # options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/3398/model_physical.xml'
     # options['obj_xml_path'] = '/home/cassie/Workspace/mani/d3fields/partnet-mobility/dataset/100013/model_physical.xml'
     # initialize the task
     env = suite.make(

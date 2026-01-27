@@ -152,6 +152,7 @@ class MyUniformRandomSampler(UniformRandomSampler):
                     # multiply this quat by the object's initial rotation if it has the attribute specified
                     if hasattr(obj, "init_quat"):
                         quat = quat_multiply(quat, obj.init_quat)
+                    # quat = np.array([1, 0, 0, 0])
 
                     # location is valid, put the object down
                     pos = (object_x, object_y, object_z)
@@ -189,7 +190,8 @@ class MultiAxisUniformRandomSampler(UniformRandomSampler):
         def _is_range_like(v):
             return isinstance(v, collections.abc.Iterable) and len(v) == 2
 
-        rot_specs = self.rotation
+        # rot_specs = self.rotation
+        rot_specs = None
 
         # quaternion helpers (w, x, y, z)
         def quat_mul(q1, q2):

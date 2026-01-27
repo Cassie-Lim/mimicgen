@@ -23,8 +23,10 @@ from robosuite.utils.placement_samplers import SequentialCompositeSampler, Unifo
 from robosuite.utils.observables import Observable, sensor
 
 import mimicgen
-from mimicgen.models.robosuite.objects import BlenderObject, DrawerObject, LongDrawerObject
+from mimicgen.models.robosuite.objects import BlenderObject, DrawerObject, LongDrawerObject, AirFryerObject
 from mimicgen.envs.robosuite.single_arm_env_mg import SingleArmEnv_MG
+from robosuite.models.base import MujocoModel
+import mujoco
 
 
 class MugCleanup(SingleArmEnv_MG):
@@ -219,6 +221,7 @@ class MugCleanup(SingleArmEnv_MG):
             renderer=renderer,
             renderer_config=renderer_config,
         )
+        self.target_body_id = self.sim.model.body_name2id(self.target.root_body)
 
     def reward(self, action=None):
         """
@@ -343,7 +346,10 @@ class MugCleanup(SingleArmEnv_MG):
             tex_attrib={"type": "cube"},
             mat_attrib={"texrepeat": "3 3", "specular": "0.4","shininess": "0.1"}
         )
-        self.drawer = DrawerObject(name="DrawerObject")
+        self.drawer = AirFryerObject(name="DrawerObject")  # use air fryer model as drawer
+        # self.drawer = DrawerObject(name="DrawerObject")
+        self.target = self.drawer
+
         obj_body = self.drawer
         for material in [redwood, ceramic, lightwood]:
             tex_element, mat_element, _, used = add_material(root=obj_body.worldbody,
@@ -577,6 +583,8 @@ class MugCleanup(SingleArmEnv_MG):
         """
         Check if task is complete.
         """
+        drawer_open = self.sim.data.qpos[self.drawer_qpos_addr] < -0.05
+        return drawer_open
 
         # check for closed drawer
         drawer_closed = self.sim.data.qpos[self.drawer_qpos_addr] > -0.01
@@ -611,6 +619,172 @@ class MugCleanup(SingleArmEnv_MG):
         # Color the gripper visualization site according to its distance to the cleanup object
         if vis_settings["grippers"]:
             self._visualize_gripper_to_target(gripper=self.robots[0].gripper, target=self.cleanup_object)
+
+    def get_contact_points(self, gripper, object_geoms, k=2):
+        """
+        Return up to k strongest contacts (by normal force) between gripper and object.
+
+        Returns: list[dict] with keys:
+        - "T_obj_contact": (4,4) contact pose in OBJECT frame
+        - "p_obj": (3,) contact position in OBJECT frame
+        - "R_obj_contact": (3,3) rotation (object<-contact)
+        - "T_obj_gripper": (4,4) gripper pose in OBJECT frame
+        - "R_obj_gripper": (3,3) rotation (object<-gripper)
+        - "p_obj_gripper": (3,) gripper origin in OBJECT frame
+        - "fn", "ft", "condim", "pair"
+        """
+        model = self.sim.model
+        data  = self.sim.data
+
+        # object geoms
+        if isinstance(object_geoms, MujocoModel):
+            o_geoms = object_geoms.contact_geoms
+        elif isinstance(object_geoms, str):
+            o_geoms = [object_geoms]
+        else:
+            o_geoms = list(object_geoms)
+
+        # gripper geoms
+        g_geoms = gripper.contact_geoms
+        g_ids = {model.geom_name2id(n) for n in g_geoms}
+        o_ids = {model.geom_name2id(n) for n in o_geoms}
+
+        Rwo = data.xmat[self.target_body_id].reshape(3, 3).copy()  # world<-object
+        pwo = data.xpos[self.target_body_id].copy()                # world pos of object origin
+
+        # Helper: build 4x4 from R, p
+        def _make_T(R, p):
+            T = np.eye(4)
+            T[:3, :3] = R
+            T[:3, 3]  = p
+            return T
+
+        results = []
+        # scratch for mj_contactForce
+        f_contact = np.zeros(6, dtype=float)
+
+        for i in range(data.ncon):
+            c = data.contact[i]
+            pair_ok = ((c.geom1 in g_ids and c.geom2 in o_ids) or
+                    (c.geom2 in g_ids and c.geom1 in o_ids))
+            if not pair_ok:
+                continue
+
+            # contact force (contact-frame)
+            f_contact[:] = 0.0
+            mujoco.mj_contactForce(model._model, data._data, i, f_contact)
+            fn = max(float(f_contact[0]), 0.0)
+            if fn <= 0.0:
+                continue
+
+            condim = int(c.dim) if hasattr(c, "dim") else int(model.geom_condim[c.geom1])
+            tangential = f_contact[1:min(condim, 3)]
+            ft = float(np.linalg.norm(tangential))
+
+            # world-space contact pose
+            p_w  = c.pos.copy()
+            R_wc = np.array(c.frame).reshape(3, 3).copy()  # world<-contact
+
+            # object-frame contact pose
+            p_o  = Rwo.T @ (p_w - pwo)
+            R_oc = Rwo.T @ R_wc
+            T_oc = _make_T(R_oc, p_o)
+
+            # ---- gripper pose (object frame) ----
+            Rwg = self.sim.data.get_site_xmat(gripper.important_sites["grip_site"])
+            pwg = self.sim.data.get_site_xpos(gripper.important_sites["grip_site"])
+
+            # object<-gripper
+            R_og = Rwo.T @ Rwg
+            p_og = Rwo.T @ (pwg - pwo)
+            T_og = _make_T(R_og, p_og)
+
+            results.append({
+                "T_obj_contact": T_oc,
+                "p_obj": p_o,
+                "R_obj_contact": R_oc,
+                "T_obj_gripper": T_og,
+                "R_obj_gripper": R_og,
+                "p_obj_gripper": p_og,
+                "fn": fn,
+                "ft": ft,
+                "condim": condim,
+                "pair": (model.geom_id2name(c.geom1), model.geom_id2name(c.geom2)),
+            })
+
+        # sort by descending normal force and keep top-k
+        results.sort(key=lambda d: d["fn"], reverse=True)
+        if k is not None and k > 0:
+            results = results[:k]
+
+        return [r["T_obj_contact"] for r in results], [r["T_obj_gripper"] for r in results]
+    def cache_geom_pcd(self, density=2e3):
+        model = self.sim.model._model
+        data  = self.sim.data._data
+        self.geom_pcd_cache = {}
+        for geom_id in range(model.ngeom):
+            gtype = model.geom_type[geom_id]
+            # Only sample mesh geoms
+            if gtype == mujoco.mjtGeom.mjGEOM_MESH:
+                mesh_id = model.geom_dataid[geom_id]
+                # ------------------------------
+                # (1) Extract mesh vertices/faces
+                # ------------------------------
+                v_adr = model.mesh_vertadr[mesh_id]
+                v_num = model.mesh_vertnum[mesh_id]
+                verts = model.mesh_vert[v_adr : v_adr + v_num]
+                f_adr = model.mesh_faceadr[mesh_id]
+                f_num = model.mesh_facenum[mesh_id]
+                faces = model.mesh_face[f_adr : f_adr + f_num]
+                # trimesh requires faces as (n,3) int
+                faces = faces.reshape(-1, 3)
+                # Build trimesh in local geom frame
+                mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+            elif gtype == mujoco.mjtGeom.mjGEOM_BOX:
+                half = model.geom_size[geom_id]    # (hx, hy, hz)
+                mesh = trimesh.creation.box(extents=2*half, transform=None)
+            else:
+                continue
+            # -------------------------------
+            # (2) Uniform sampling in mesh frame
+            # -------------------------------
+            samples, face_idx = uniform_sample_pcd_from_mesh(mesh, density=density)
+
+            # # -------------------------------
+            # # (3) Transform samples to world frame
+            # # -------------------------------
+            # pos = data.geom_xpos[geom_id]
+            # mat = data.geom_xmat[geom_id].reshape(3, 3)
+
+            # # local → world transform:  x_world = R * x_local + pos
+            # samples_w = samples @ mat.T + pos
+
+            self.geom_pcd_cache[geom_id] = samples
+
+
+    def get_scene_pcd(self, n_samples=10000):
+        all_points = []
+        for geom_id, pcd in self.geom_pcd_cache.items():
+            # Transform samples to world frame
+            pos = self.sim.data.geom_xpos[geom_id]
+            mat = self.sim.data.geom_xmat[geom_id].reshape(3, 3)
+
+            # local → world transform:  x_world = R * x_local + pos
+            samples_w = pcd @ mat.T + pos
+            all_points.append(samples_w)
+        scene_pcd = np.concatenate(all_points, axis=0)
+        scene_box_lower_bound = np.array([-1.0, -2.0,  0.5])
+        scene_box_upper_bound = np.array([ 2.0,  2.0,  5.0])
+        scene_pcd = scene_pcd[
+            (scene_pcd[:,0] >= scene_box_lower_bound[0]) & (scene_pcd[:,0] <= scene_box_upper_bound[0]) &
+            (scene_pcd[:,1] >= scene_box_lower_bound[1]) & (scene_pcd[:,1] <= scene_box_upper_bound[1]) &
+            (scene_pcd[:,2] >= scene_box_lower_bound[2]) & (scene_pcd[:,2] <= scene_box_upper_bound[2])
+        ]
+
+        pc_o3d = o3d.geometry.PointCloud()
+        pc_o3d.points = o3d.utility.Vector3dVector(scene_pcd)
+        pc_o3d = pc_o3d.farthest_point_down_sample(int(n_samples))
+        return np.asarray(pc_o3d.points)
 
 
 class MugCleanup_D0(MugCleanup):

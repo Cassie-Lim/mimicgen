@@ -306,7 +306,7 @@ def generate_dataset(
 
         # generate trajectory
         try:
-            generated_traj = data_generator.generate(
+            generated_traj = data_generator.generate_mimicgen_vanilla(
                 env=env,
                 env_interface=env_interface,
                 select_src_per_subtask=mg_config.experiment.generation.select_src_per_subtask,
@@ -447,7 +447,6 @@ def generate_dataset(
         num_problematic=num_problematic,
         start_time=start_time,
         ep_length_stats=ep_length_stats,
-        failure_mode_meta=failure_mode_meta
     )
     print("\nStats Summary")
     print(json.dumps(stats, indent=4))
